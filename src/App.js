@@ -4,8 +4,6 @@ import _ from 'lodash';
 
 import PatternView from './PatternView'
 
-const PLAYLIST_KEY = "firestorm:playlists:0"
-
 class App extends Component {
   constructor(props) {
     super(props);
@@ -21,9 +19,10 @@ class App extends Component {
       cloneInProgress: false,
       showDevControls: false
     }
-    // The playlist is the only thing currently persisted and it is per-broswer
-    this.state.playlist = JSON.parse(localStorage.getItem(PLAYLIST_KEY)) || []
-
+    this.getPlaylistFromDb()
+      .then((playlistResults) => {
+        this.state.playlist = playlistResults;
+      })
     if (this.state.playlist.length) {
       this.state.playlistDefaultInterval = _(this.state.playlist).last().duration
     }
@@ -35,6 +34,38 @@ class App extends Component {
     this.cloneDialogRef = React.createRef();
   }
 
+  // come back to this later, it would be ideal to share this around...
+  async playlistAPIRequest(method, body?, route) {
+    const payload = {
+      method: method,
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    }
+    if (method !== 'GET') payload[body] = body
+
+    const playlist = await fetch(route, payload)
+        .then((res) => {
+          return res.json();
+        })
+    console.log(playlist)
+    return playlist
+  }
+  async getPlaylistFromDb() {
+    const payload = {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    }
+    const playlist = await fetch('./playlist/getPatterns', payload)
+        .then((res) => {
+          return res.json();
+        })
+    return playlist
+  }
   async poll() {
     if (this.interval)
       clearTimeout(this.interval);
@@ -115,8 +146,57 @@ class App extends Component {
     await this._startNewPlaylist(pattern)
   }
 
-  storePlaylist = () => {
-    localStorage.setItem(PLAYLIST_KEY, JSON.stringify(this.state.playlist))
+  storePlaylist = (patternNameToBeRemoved?: string, addNewPlaylist?: Object) => {
+    if (!patternNameToBeRemoved) {
+      this.state.playlist.map((pattern) => {
+        return new Promise((resolve) => {
+          const payload = {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              name: pattern.name,
+              duration: pattern.duration
+            })
+          }
+          resolve(fetch('./playlist/addPattern', payload))
+        })
+      })
+    }
+    if (patternNameToBeRemoved) {
+      return new Promise((resolve) => {
+        const payload = {
+          method: 'PUT',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: patternNameToBeRemoved
+          })
+        }
+        resolve(fetch('./playlist/removePattern', payload))
+      })
+    }
+    if (addNewPlaylist) {
+      // handle new playlist here too
+      return new Promise((resolve) => {
+        const payload = {
+          method: 'PUT',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: addNewPlaylist[0].name,
+            duration: addNewPlaylist[0].duration
+          })
+        }
+        resolve(fetch('./playlist/newPlaylist', payload))
+      })
+    }
   }
 
   _handleDurationChange = async (event, pattern, newDuration) => {
@@ -138,7 +218,7 @@ class App extends Component {
     const clickedPlaylistIndex = _(playlist).findIndex(['name', pattern.name])
     if (clickedPlaylistIndex === -1) {
       if (!playlist.length) {
-        this._startNewPlaylist(pattern)
+        await this._startNewPlaylist(pattern)
       } else {
         // console.log(`adding pattern ${pattern.name} to playlist`)
         const newPlaylist = playlist.slice()
@@ -150,18 +230,21 @@ class App extends Component {
         // console.log(`removing pattern ${pattern.name} from playlist`)
         const newPlaylist = playlist.slice()
         newPlaylist.splice(clickedPlaylistIndex, 1)
-        this.setState({ playlist: newPlaylist }, this.storePlaylist)
+        this.setState({ playlist: newPlaylist },
+            () => {this.storePlaylist(pattern.name)}
+        )
       }
     }
   }
 
   async _startNewPlaylist(startingPattern) {
     clearInterval(this._playlistInterval)
+    const newPlaylist = [{ name: startingPattern.name, duration: this.state.playlistDefaultInterval }]
     this.setState({
-      playlist: [{ name: startingPattern.name, duration: this.state.playlistDefaultInterval }],
+      playlist: newPlaylist,
       playlistIndex: 0
     }, () => {
-      this.storePlaylist()
+      this.storePlaylist(null, newPlaylist)
       this._launchPatternAndSetTimeout()
     })
   }
@@ -215,7 +298,6 @@ class App extends Component {
       cloneDest: {}
     });
   }
-
   setCloneDest = (id, checked) => {
     this.setState((state, props) => {
       let cloneDest = Object.assign({}, state.cloneDest);
@@ -350,7 +432,6 @@ class App extends Component {
             <hr/>
 
             {cloneDialog}
-
             <h3>Patterns</h3>
             <div className="list-group">
               {this.state.groups.map((pattern) => {

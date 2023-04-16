@@ -16,6 +16,7 @@ app.use(bodyParser.json());
 const {PORT = 80} = process.env
 
 require("./app/api")(app);
+require('./db/api/router')(app);
 
 app.use(compression())
 app.use(express.static('build'));
