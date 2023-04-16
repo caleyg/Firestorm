@@ -19,10 +19,12 @@ class App extends Component {
       cloneInProgress: false,
       showDevControls: false
     }
-    this.getPlaylistFromDb()
-      .then((playlistResults) => {
-        this.state.playlist = playlistResults;
-      })
+
+    this.playlistAPIRequest('GET',null, './playlist/getPatterns')
+        .then((playlistResults) => {
+          this.state.playlist = playlistResults;
+        })
+
     if (this.state.playlist.length) {
       this.state.playlistDefaultInterval = _(this.state.playlist).last().duration
     }
@@ -34,7 +36,6 @@ class App extends Component {
     this.cloneDialogRef = React.createRef();
   }
 
-  // come back to this later, it would be ideal to share this around...
   async playlistAPIRequest(method, body?, route) {
     const payload = {
       method: method,
@@ -43,29 +44,16 @@ class App extends Component {
         'Content-Type': 'application/json'
       }
     }
-    if (method !== 'GET') payload[body] = body
+    if (method !== 'GET') payload['body'] = body
 
-    const playlist = await fetch(route, payload)
+    const result = await fetch(route, payload)
         .then((res) => {
           return res.json();
         })
-    console.log(playlist)
-    return playlist
+    console.log({result})
+    return result
   }
-  async getPlaylistFromDb() {
-    const payload = {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      }
-    }
-    const playlist = await fetch('./playlist/getPatterns', payload)
-        .then((res) => {
-          return res.json();
-        })
-    return playlist
-  }
+
   async poll() {
     if (this.interval)
       clearTimeout(this.interval);
@@ -148,54 +136,38 @@ class App extends Component {
 
   storePlaylist = (patternNameToBeRemoved?: string, addNewPlaylist?: Object) => {
     if (!patternNameToBeRemoved) {
+      // add pattern name to existing playlist
       this.state.playlist.map((pattern) => {
-        return new Promise((resolve) => {
-          const payload = {
-            method: 'POST',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              name: pattern.name,
-              duration: pattern.duration
-            })
-          }
-          resolve(fetch('./playlist/addPattern', payload))
+        const body = JSON.stringify({
+          name: pattern.name,
+          duration: pattern.duration
         })
+        return this.playlistAPIRequest('POST',body, './playlist/addPattern')
+            .then((playlistResults) => {
+              return playlistResults;
+            })
       })
     }
     if (patternNameToBeRemoved) {
-      return new Promise((resolve) => {
-        const payload = {
-          method: 'PUT',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            name: patternNameToBeRemoved
-          })
-        }
-        resolve(fetch('./playlist/removePattern', payload))
+      // remove pattern name from playlist
+      const body = JSON.stringify({
+        name: patternNameToBeRemoved
       })
+      return this.playlistAPIRequest('PUT', body, './playlist/removePattern')
+          .then((playlistResults) => {
+            return playlistResults;
+          })
     }
     if (addNewPlaylist) {
-      // handle new playlist here too
-      return new Promise((resolve) => {
-        const payload = {
-          method: 'PUT',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            name: addNewPlaylist[0].name,
-            duration: addNewPlaylist[0].duration
-          })
-        }
-        resolve(fetch('./playlist/newPlaylist', payload))
+      // create a new playlist with a new pattern
+      const body = JSON.stringify({
+        name: addNewPlaylist[0].name,
+        duration: addNewPlaylist[0].duration
       })
+      return this.playlistAPIRequest('PUT', body, './playlist/newPlaylist')
+          .then((playlistResults) => {
+            return playlistResults;
+          })
     }
   }
 
@@ -432,6 +404,7 @@ class App extends Component {
             <hr/>
 
             {cloneDialog}
+
             <h3>Patterns</h3>
             <div className="list-group">
               {this.state.groups.map((pattern) => {

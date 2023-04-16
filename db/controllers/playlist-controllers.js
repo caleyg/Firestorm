@@ -1,9 +1,10 @@
 const knex = require('../db')
 
+const playlist_table = 'playlist'
 exports.getAllPlaylistPatterns = async (req, res) => {
     knex
         .select('*')
-        .from('playlist')
+        .from(playlist_table)
         .then(playlistData => {
             res.status(200)
                 .json(playlistData);
@@ -17,7 +18,7 @@ exports.getAllPlaylistPatterns = async (req, res) => {
 exports.addPatternToPlaylist = async (req, res) => {
     const doesPatternExistInPlaylist = await knex
         .select('*')
-        .from('playlist')
+        .from(playlist_table)
         .where('name', "=", req.body.name)
         .then((res) => {
             if(res.length === 0) return false
@@ -29,7 +30,7 @@ exports.addPatternToPlaylist = async (req, res) => {
             .update({
                 duration: req.body.duration,
             })
-            .into('playlist')
+            .into(playlist_table)
             .where(
                 'name', '=', req.body.name
             )
@@ -47,7 +48,7 @@ exports.addPatternToPlaylist = async (req, res) => {
                 name: req.body.name,
                 duration: req.body.duration,
             })
-            .into('playlist')
+            .into(playlist_table)
             .then(() => {
                 res.status(200)
                     .json({message: `Pattern \'${req.body.name}\' with a duration of ${req.body.duration} created.`})
@@ -61,7 +62,7 @@ exports.addPatternToPlaylist = async (req, res) => {
 
 exports.removePatternToPlaylist = async (req, res) => {
     knex
-        .into('playlist')
+        .into(playlist_table)
         .where('name', req.body.name)
         .del()
         .then( () => {
@@ -79,7 +80,7 @@ exports.removePatternToPlaylist = async (req, res) => {
 
 exports.newPlaylist = async (req, res) => {
     await knex
-        .into('playlist')
+        .into(playlist_table)
         .where('id','!=', 'null')
         .del()
         .then( () => {
