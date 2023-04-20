@@ -156,7 +156,7 @@ exports.removeAllPatterns = async (req, res) => {
         .where('id','!=', 'null')
         .del()
         .then( () => {
-            return JSON.stringify({ message: `Removing all patterns from playlist.`})
+                return JSON.stringify({ message: `Removing all patterns from playlist.`})
             }
         )
         .catch(err => {

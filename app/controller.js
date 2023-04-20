@@ -188,7 +188,7 @@ module.exports = class PixelblazeController {
 
   async getProgramBinary(programId, extension = "") {
     let extensionDesc = (extension == ".c") ? " controls" : ""
-    console.log("getting program " + programId + extensionDesc + " from " + this.props.address);
+    // console.log("getting program " + programId + extensionDesc + " from " + this.props.address);
     var resp = await fetch('http://' + this.props.address + "/p/" + programId + extension, {
       highWaterMark: 1024 * 1024
     });

@@ -32,7 +32,6 @@ class Brightness {
         await this.utils.broadcastMessage({ currentBrightness: currentBrightness})
     }, 1000)
     getBrightness = async () =>{
-        console.log(currentBrightness)
         await this.utils.broadcastMessage({ currentBrightness: currentBrightness})
     }
     storeBrightness = async (brightness) => {

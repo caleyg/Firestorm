@@ -5,7 +5,6 @@ const bodyParser = require('body-parser');
 const compression = require('compression');
 const repl = require('repl');
 require("./app/firestormWebsocket");
-// require("./app/playlist");
 discovery.start({
   host: '0.0.0.0',
   port: 1889
@@ -34,4 +33,3 @@ r.on('exit', () => {
 });
 r.context.discoveries = discovery.discoveries;
 r.context.reqire = require;
-
