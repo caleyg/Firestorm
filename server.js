@@ -4,7 +4,7 @@ const app = express()
 const bodyParser = require('body-parser');
 const compression = require('compression');
 const repl = require('repl');
-
+require("./app/playlist");
 discovery.start({
   host: '0.0.0.0',
   port: 1889
@@ -26,6 +26,7 @@ app.listen(PORT)
 
 
 const r = repl.start('> ');
+
 r.on('exit', () => {
   console.log('Received "exit" event from repl!');
   process.exit();

@@ -1,6 +1,7 @@
 import React, {Component} from 'react';
 import './App.css';
 import _ from 'lodash';
+import {check, connect, sendMessage, ws} from "./utils";
 
 import PatternView from './PatternView'
 
@@ -8,12 +9,15 @@ class App extends Component {
   constructor(props) {
     super(props);
     this.state = {
+      brightness: null,
       deactivateDisableAllButton: true,
       deactivateEnableAllButton: false,
       discoveries: [],
       isProcessing: false,
       groups: [],               // Currently duscovered patterns and their controllers
       runningPatternName: null,
+      message: [],
+      newPlaylist: [],
       playlist: [],             // Browser-persisted single playlist singleton
       playlistIndex: 0,
       playlistDefaultInterval: 15,
@@ -22,12 +26,8 @@ class App extends Component {
       cloneInProgress: false,
       showDevControls: false,
       showCurrentPlaylist: false,
+      ws: null
     }
-
-    this.playlistAPIRequest('GET',null, './playlist/getPatterns')
-        .then((playlistResults) => {
-          this.state.playlist = playlistResults;
-        })
 
     if (this.state.playlist.length) {
       this.state.playlistDefaultInterval = _(this.state.playlist).last().duration
@@ -35,13 +35,31 @@ class App extends Component {
 
     this.poll = this.poll.bind(this);
 
-    this._playlistInterval = null
-
     this.cloneDialogRef = React.createRef();
     this.playlistDialogRef = React.createRef();
-  }
+  };
 
-  async playlistAPIRequest(method, body?, route) {
+  filterMessage(){
+    const message = this.state.message
+    if(message) {
+      message.filter((item) => {
+        this.setState({
+          runningPatternName: (this.state.runningPatternName === item.currentRunningPattern) ? this.state.runningPatternName : item.currentRunningPattern,
+          playlist: JSON.parse((JSON.stringify(this.state.playlist) === JSON.stringify(item.currentPlaylist)) ? JSON.stringify(this.state.playlist) : JSON.stringify(item.currentPlaylist)),
+        })
+        return this
+      })
+    }
+  }
+  receiveMessage(message) {
+    if (message) {
+      this.setState({
+        message: [JSON.parse(message.data)]
+      })
+    }
+    this.filterMessage()
+  }
+  async apiRequest(method, body?, route) {
     const payload = {
       method: method,
       headers: {
@@ -50,19 +68,21 @@ class App extends Component {
       }
     }
     if (method !== 'GET') payload['body'] = body
-
-    const result = await fetch(route, payload)
-        .then((res) => {
-          return res.json();
-        })
-    return result
+    try {
+      const result = await fetch(route, payload)
+          .then((res) => {
+            return res.json();
+          })
+      return result
+    } catch(err) {
+      console.warn(`unable to fetch request for some reason ${err}`)
+    }
   }
-
   async poll() {
     if (this.interval)
       clearTimeout(this.interval);
-    let res = await fetch('./discover')
     try {
+      let res = await fetch('./discover')
       let discoveries = await res.json();
 
       let groupByName = {};
@@ -85,45 +105,63 @@ class App extends Component {
           .sortBy('name')
           .value();
       // console.log("groups", groups);
-
       discoveries = _.sortBy(discoveries, "name")
       this.setState({discoveries, groups})
     } catch (err) {
       this.setState({err})
     }
+    check()
     if (!this.unmounting)
       this.interval = setTimeout(this.poll, 1000)
   }
 
+
   async componentDidMount() {
     document.addEventListener("keydown", this._handleKeyDown);
+    this.getCurrentBrightness()
     await this.poll()
-    if (this.state.playlist.length) await this._launchPatternAndSetTimeout()
-    // looking at playlist length configure bulk playlist buttons
-    setTimeout(() =>{
-      if(this.state.playlist.length === this.state.groups.length){
-        this.setState({
-          deactivateEnableAllButton: true,
-          deactivateDisableAllButton:  false
-        })
-      }
-    }, 100);
+    // connecting to playlist websocket server
+    connect();
+    // attaching websocket event listener to receive messages
+    ws.addEventListener('message', (event) => {this.receiveMessage(event)});
+    // using setState chain to control timing of these two functions.
+    this.setState({}, () =>  {
+      // kicking off playlist event loops on page load
+      this._launchPlaylistNow();
+      this.setState({}, () => {
+        setTimeout(() =>{
+          // ensuring this runs after the above _launchPlaylistNow fires and completes.
+          // looking at playlist length configure bulk playlist buttons
+          if(this.state.playlist.length === this.state.groups.length){
+            this.setState({
+              deactivateEnableAllButton: true,
+              deactivateDisableAllButton:  false
+            })
+          }
+        }, 1000)
+      })
+    })
+
+
   }
 
   componentWillUnmount() {
     this.unmounting = true;
     clearInterval(this.interval)
-    clearInterval(this._playlistInterval)
+    ws.close()
+    ws.removeEventListener('message', (event) => {this.receiveMessage(event)});
   }
 
-  async _launchPattern(pattern) {
-    if (this.state.runningPatternName === pattern.name) {
-      console.warn(`pattern ${pattern.name} is already running, ignoring launch request`)
-      return
-    }
-    // console.log('launching pattern', pattern)
+  delayedSaveBrightness = _.debounce(async (resolve, payload) => {
+    resolve(fetch('./command', payload));
+    //TODO: fix this
+    this.storeBrightness();
+  }, 1000)
+
+  changeBrightness = (event) => {
+    event.preventDefault()
     return new Promise((resolve) => {
-      this.setState({ runningPatternName: pattern.name }, () => {
+      this.setState({brightness: event.target.value}, () => {
         const payload = {
           method: 'POST',
           headers: {
@@ -132,14 +170,73 @@ class App extends Component {
           },
           body: JSON.stringify({
             command: {
-              programName: pattern.name
+              brightness: parseFloat(this.state.brightness)
             },
-            ids: _.map(pattern.pixelblazes, 'id')
+            ids: _.map(this.state.discoveries, 'id')
           })
         }
-        resolve(fetch('./command', payload))
+        this.delayedSaveBrightness(resolve, payload)
       })
     })
+  }
+  getCurrentBrightness() {
+    this.apiRequest('GET', null, './brightness/current')
+        .then((currentBrightness) => {
+          this.setState({
+            brightness: currentBrightness[0].value
+          })
+          return
+        })
+  }
+  downloadPatternArchive = async (event, deviceId) => {
+    event.preventDefault()
+    await fetch(`./controllers/${deviceId}/dump`)
+        .then(async res => {
+          let filename = ''
+          for (const header of res.headers) {
+            if (header[1].includes('filename')) {
+              const dispositionHeader = header[1]
+              // ignoring warning for `_`
+              // eslint-disable-next-line no-unused-vars
+              const [_, rawFilename] = dispositionHeader.split('=')
+              // removing double quotes
+              filename = rawFilename.replace(/^"(.+(?="$))"$/, '$1')
+            }
+          }
+          const url = URL.createObjectURL(await res.blob())
+          const element = document.createElement("a");
+          element.setAttribute("href", url);
+          element.setAttribute("download", filename);
+          element.style.display = "none";
+          document.body.appendChild(element);
+          element.click();
+          document.body.removeChild(element);
+          URL.revokeObjectURL(url);
+        })
+        .catch(err => console.error(err));
+  }
+
+  async _launchPattern(pattern) {
+    if (this.state.runningPatternName === pattern.name) {
+      console.warn(`pattern ${pattern.name} is already running, ignoring launch request`)
+      return
+    }
+    this._launchPlaylistNow()
+  }
+
+  openPlaylistDialog = async (event) => {
+    event.preventDefault();
+    this.setState({
+      showCurrentPlaylist: true
+    });
+    setTimeout(() => {
+      this.playlistDialogRef.current && this.playlistDialogRef.current.scrollIntoView(true);
+    }, 100)
+    if( this.state.showCurrentPlaylist === true ) {
+      this.setState({
+        showCurrentPlaylist: false
+      });
+    }
   }
 
   _handlePatternClick = async (event, pattern) => {
@@ -147,83 +244,107 @@ class App extends Component {
     await this._startNewPlaylist(pattern)
   }
 
-  storePlaylist = async (patternNameToBeRemoved?: string, addNewPlaylist?: Object) => {
-    if (!patternNameToBeRemoved) {
+  storePlaylist = (patternNameToBeRemoved?: string, addNewPlaylist?: Object, mode) => {
+    if (patternNameToBeRemoved === null && mode === "update") {
+      console.log('trying to add to existing playlist')
       // add pattern name to existing playlist
-      this.state.playlist.map((pattern) => {
+      this.state.newPlaylist.map((pattern) => {
         const body = JSON.stringify({
           name: pattern.name,
           duration: pattern.duration
         })
-        return this.playlistAPIRequest('POST',body, './playlist/addPattern')
-          .then((playlistResults) => {
-            return playlistResults;
-          })
+        return this.apiRequest('POST',body, './playlist/addPattern')
+            .then((playlistResults) => {
+              return playlistResults;
+            })
       })
     }
-    if (patternNameToBeRemoved) {
+    if (patternNameToBeRemoved && mode === "remove") {
       // remove pattern name from playlist
       const body = JSON.stringify({
         name: patternNameToBeRemoved
       })
-      return this.playlistAPIRequest('PUT', body, './playlist/removePattern')
+      return this.apiRequest('PUT', body, './playlist/removePattern')
           .then((playlistResults) => {
             return playlistResults;
           })
     }
-    if (addNewPlaylist) {
+    if (addNewPlaylist && mode === "create") {
       // create a new playlist with a new pattern
       const body = JSON.stringify({
-        name: addNewPlaylist[0].name,
-        duration: addNewPlaylist[0].duration
+        name: addNewPlaylist.name,
+        duration: addNewPlaylist.duration
       })
-      return this.playlistAPIRequest('PUT', body, './playlist/newPlaylist')
+      this.apiRequest('PUT', body, './playlist/newPlaylist')
           .then((playlistResults) => {
             return playlistResults;
           })
+      this._launchPlaylistNow()
     }
+  }
+
+  storeBrightness = () => {
+    const body = JSON.stringify({
+      value: parseFloat(this.state.brightness)
+    })
+    this.apiRequest('POST', body, './brightness/update')
+        .then((brightness) => {
+          return brightness;
+        })
   }
 
   _handleDurationChange = async (event, pattern, newDuration) => {
     event.preventDefault()
     const newValidDuration = parseFloat(newDuration) || 0
     const { playlist } = this.state
-    const newPlaylist = playlist.slice()
-    _(newPlaylist).find(['name', pattern.name]).duration = newValidDuration
+    const newTempPlaylist = playlist.slice()
+    _(newTempPlaylist).find(['name', pattern.name]).duration = newValidDuration
 
     this.setState({
-      playlist: newPlaylist,
+      newPlaylist: newTempPlaylist,
       playlistDefaultInterval: newValidDuration
-    }, this.storePlaylist)
+    }, () => {
+      setTimeout(() => {
+        this.storePlaylist(null, null, "update")
+      }, 10)
+    })
   }
 
-  addNewPatternToPlaylist = (pattern, playlist, interval) => {
-    // console.log(`adding pattern ${pattern.name} to playlist`)
+  addNewPatternToPlaylist = async (pattern, playlist, interval) => {
+    console.log(`adding pattern ${pattern.name} to playlist`)
     playlist.push({ name: pattern.name, duration: interval })
-    this.setState({ playlist: playlist }, this.storePlaylist)
+    this.setState(
+        { newPlaylist: playlist }, () => {
+          setTimeout(() => {
+            this.storePlaylist(null, null, "update")
+          }, 10)
+        })
+    this._launchPlaylistNow()
   }
 
-  removePatternFromPlaylist = (pattern, clickedPlaylistIndex, playlistIndex) => {
-    const newPlaylist = this.state.playlist.slice()
+  removePatternFromPlaylist = async (pattern, clickedPlaylistIndex, playlistIndex) => {
     if (clickedPlaylistIndex !== playlistIndex) {
-      // console.log(`removing pattern ${pattern.name} from playlist`)
-      newPlaylist.splice(clickedPlaylistIndex, 1)
-      this.setState({ playlist: newPlaylist }, async () => {
-        await this.storePlaylist(pattern.name)
-      })
+      console.log(`removing pattern ${pattern.name} from playlist`)
+      const newTempPlaylist = this.state.playlist.slice()
+      newTempPlaylist.splice(clickedPlaylistIndex, 1)
+      setTimeout(() => {
+        const name = pattern.name
+        this.storePlaylist(name, null, "remove")
+      }, 100)
+      this._launchPlaylistNow()
     }
   }
 
   _handleAddClick = async (event, pattern) => {
     event.preventDefault()
-    const { playlist, playlistIndex, playlistDefaultInterval } = this.state
+    const {playlist, playlistIndex, playlistDefaultInterval} = this.state
     const clickedPlaylistIndex = _(playlist).findIndex(['name', pattern.name])
     if (clickedPlaylistIndex === -1) {
       if (!playlist.length) {
         await this._startNewPlaylist(pattern)
       } else {
-        const newPlaylist = playlist.slice()
-        this.addNewPatternToPlaylist(pattern, newPlaylist, playlistDefaultInterval)
+        const newTempPlaylist = playlist.slice()
+        await this.addNewPatternToPlaylist(pattern, newTempPlaylist, playlistDefaultInterval)
       }
     } else {
       await this.removePatternFromPlaylist(pattern, clickedPlaylistIndex, playlistIndex)
@@ -231,45 +352,49 @@ class App extends Component {
   }
 
   async _startNewPlaylist(startingPattern) {
-    clearInterval(this._playlistInterval)
-    const newPlaylist = [{ name: startingPattern.name, duration: this.state.playlistDefaultInterval }]
+    const newTempPlaylist = { name: startingPattern.name, duration: this.state.playlistDefaultInterval }
     this.setState({
-      playlist: newPlaylist,
+      playlist: newTempPlaylist,
       playlistIndex: 0
     }, () => {
-      this.storePlaylist(null, newPlaylist)
-      this._launchPatternAndSetTimeout()
+      setTimeout(() => {
+        this.storePlaylist(null, newTempPlaylist, "create");
+      }, 100)
     })
   }
-
+  _launchPlaylistNow() {
+    const message = {
+      type: 'LAUNCH_PLAYLIST_NOW'
+    }
+    sendMessage(message)
+  }
   async _launchPatternAndSetTimeout() {
     await this._launchCurrentPattern()
-    const { playlist, playlistIndex } = this.state
-    this._playlistInterval = setTimeout(() => {
-      const { playlist, playlistIndex } = this.state
-      const nextIndex = (playlistIndex + 1) % playlist.length
-      this.setState({ playlistIndex: nextIndex }, () => this._launchPatternAndSetTimeout())
-    }, playlist[playlistIndex].duration * 1000)
   }
 
   async _launchCurrentPattern() {
-    try {
-      const {playlist, playlistIndex} = this.state
-      const currentPatternName = playlist[playlistIndex].name
-      const currentPattern = this.state.groups.find((pattern) => {
-        return pattern.name === currentPatternName
-      })
-      if (currentPattern) {
-        await this._launchPattern(currentPattern)
-      } else {
-        console.warn(`pattern with name ${currentPatternName} not found`)
-      }
-    } catch (e) {
-      console.warn(`${e}`)
+    const { playlist, playlistIndex } = this.state
+    const currentPatternName = playlist[playlistIndex].name
+    const currentPattern = this.state.groups.find((pattern) => {
+      return pattern.name === currentPatternName
+    })
+    if (currentPattern) {
+      await this._launchPattern(currentPattern)
+    } else {
+      console.warn(`pattern with name ${currentPatternName} not found`)
     }
   }
 
   enableAllPatterns = (event) => {
+
+    //TODO: spinner exits early, and this could be better perhaps add all
+    // patterns on backend and return when ready?
+    // http://localhost:3000/playlist/addPattern net::ERR_INSUFFICIENT_RESOURCES
+    // apiRequest @ App.js:72
+    // (anonymous) @ App.js:256
+    // App.storePlaylist @ App.js:251
+    // (anonymous) @ App.js:319
+    // re
     event.preventDefault();
     if (this.state.deactivateEnableAllButton) {
       return;
@@ -278,53 +403,50 @@ class App extends Component {
     // lifecycles make presenting this spinner awfully weird
     // this is a cruel hack to show a loader while processing all the patterns
     this.setState({ isProcessing: true }, () => {
-      setTimeout( () => {
       const newPlaylist = this.state.playlist.slice();
-      (this.state.groups).forEach((pattern) => {
+      // await (this.state.groups).forEach((pattern) => {
+      for (const pattern of this.state.groups) {
+        // await (this.state.groups).forEach((pattern) => {
         if (((this.state.playlist).some(item => item.name !== pattern.name)) || (!(this.state.playlist.length))) {
-          this.addNewPatternToPlaylist(pattern, newPlaylist, this.state.playlistDefaultInterval);
+          this.addNewPatternToPlaylist(pattern, newPlaylist, this.state.playlistDefaultInterval)
         };
+      }
+      setTimeout(  () => {
         this.setState({
           isProcessing: false,
           deactivateEnableAllButton: true,
           deactivateDisableAllButton: false
         });
-      })
       }, 100)
     })
   }
 
   disableAllPatterns = () => {
+
+    // for some reason we still have one enabled here... must remove them all
     if (this.state.deactivateDisableAllButton) {
       return;
     }
-    (this.state.groups).forEach((pattern) => {
+    (this.state.groups).forEach(async (pattern) => {
       const playlist = this.state.playlist
       const clickedPlaylistIndex = _(playlist).findIndex(['name', pattern.name])
-      this.removePatternFromPlaylist(pattern, clickedPlaylistIndex, this.state.playlistIndex)
+      await this.removePatternFromPlaylist(pattern, clickedPlaylistIndex, this.state.playlistIndex)
     })
     // resetting playlist state to force UI to rerender
     this.setState({
       playlist: []
     })
-    // gathering current playlist from db and forcing UI to rerender with current pattern entry
+    // gathering current playlist from local db and forcing UI to rerender with current pattern entry
     // effectively a newplaylist.
-    setTimeout(() =>{
-      this.playlistAPIRequest('GET',null, './playlist/getPatterns')
-        .then((playlistResults) => {
-          this.setState({
-            playlist: playlistResults
-          })
-        })
-    }, 1000);
+    // setTimeout(() =>{
+    //   this.storePlaylist()
+    // }, 100);
+    this._launchPlaylistNow()
     this.setState({
       deactivateEnableAllButton: false,
       deactivateDisableAllButton: true,
     });
-
-    // this.state.playlist = JSON.parse(localStorage.getItem(PLAYLIST_KEY)) || []
   }
-
 
   handleReload = async (event) => {
     event.preventDefault();
@@ -343,21 +465,6 @@ class App extends Component {
     setTimeout(() => {
       this.cloneDialogRef.current && this.cloneDialogRef.current.scrollIntoView(true);
     }, 100)
-  }
-
-  openPlaylistDialog = async (event) => {
-    event.preventDefault();
-    this.setState({
-      showCurrentPlaylist: true
-    });
-    setTimeout(() => {
-      this.playlistDialogRef.current && this.playlistDialogRef.current.scrollIntoView(true);
-    }, 100)
-    if( this.state.showCurrentPlaylist === true ) {
-      this.setState({
-        showCurrentPlaylist: false
-      });
-    }
   }
 
   closeCloneDialog = async (event) => {
@@ -406,7 +513,7 @@ class App extends Component {
     if(event.key === '/') {
       // Toggle developer controls
       this.setState({
-       showDevControls: !this.state.showDevControls
+        showDevControls: !this.state.showDevControls
       });
     }
   }
@@ -446,13 +553,13 @@ class App extends Component {
                       </h3>
                   )}
                   {!this.state.cloneInProgress && (
-                    <>
-                      <button className="card-link btn btn-primary" onClick={this.closeCloneDialog}>Cancel</button>
-                      <button className="card-link btn btn-danger" onClick={this.handleClone}>Clone</button>
-                      <div className="alert alert-danger" role="alert" style={{marginTop:"1em"}}>
-                        Cloning is destructive and cannot be undone! After cloning, the destination controllers will exactly match the source.
-                      </div>
-                    </>
+                      <>
+                        <button className="card-link btn btn-primary" onClick={this.closeCloneDialog}>Cancel</button>
+                        <button className="card-link btn btn-danger" onClick={this.handleClone}>Clone</button>
+                        <div className="alert alert-danger" role="alert" style={{marginTop:"1em"}}>
+                          Cloning is destructive and cannot be undone! After cloning, the destination controllers will exactly match the source.
+                        </div>
+                      </>
                   )}
                 </div>
               </div>
@@ -477,20 +584,20 @@ class App extends Component {
                     </div>
                   </div>
                   {(this.state.playlist).map( (pattern, index) =>
-                    <div className="row no-gutters list-group-item py-0 pr-0" key={index}>
-                      <div className="row align-items-center">
-                        <div className="col-md-6 p-0">
-                          <div className="p-2 m-auto">
-                            {pattern.name}
+                      <div className="row no-gutters list-group-item py-0 pr-0" key={index}>
+                        <div className="row align-items-center">
+                          <div className="col-md-6 p-0">
+                            <div className="p-2 m-auto">
+                              {pattern.name}
+                            </div>
                           </div>
-                        </div>
-                        <div className="col-md-1 py-0 pr-0 row no-gutters text-left">
-                          <div className="p-2 m-auto">
-                            {pattern.duration}
+                          <div className="col-md-1 py-0 pr-0 row no-gutters text-left">
+                            <div className="p-2 m-auto">
+                              {pattern.duration}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
                   )}
                 </div>
               </div>
@@ -498,7 +605,6 @@ class App extends Component {
           </div>
       )
     }
-
     return (
         <div className="container">
           <header className="header clearfix">
@@ -518,19 +624,40 @@ class App extends Component {
             <div className="row">
               <div className="col-lg-12">
 
-                <h3>Controllers
-                  <button className="btn btn-primary " onClick={this.handleReload} style={{marginLeft:"1em"}}>↻</button>
-                </h3>
+                <div className="row no-gutters">
+                  <h3>Controllers
+                    <button className="btn btn-primary " onClick={this.handleReload} style={{marginLeft:"1em"}}>↻</button>
+                  </h3>
+                  <div className="navbrightness no-learning-ui row no-gutters pull-right">
+                    <label>
+                      <span role="img" aria-label="light bulb emoji for pixelblaze brightness">💡</span>
+                      <input
+                          id="brightness"
+                          type="range"
+                          className="form-control"
+                          onChange={this.changeBrightness}
+                          min="0"
+                          max="1"
+                          step=".005"
+                          title={`Brightness ${Math.round(this.state.brightness * 100)  }%`}
+                          value={(this.state.brightness !== null) && this.state.brightness}
+                      />
+                    </label>
+                  </div>
+                </div>
                 <ul className="list-group col-lg-8" id="list">
                   {this.state.discoveries.map(d => {
                     const dName = d.name
                     return (
-                      <li className="list-group-item" key={dName}>
-                        <a className={"btn btn-secondary float-right " + (!this.state.showDevControls && "d-none")} href={"controllers/" + d.id + "/dump"} download>Dump</a>
-                        <button className="btn btn-secondary float-right" onClick={(event)=>this.openCloneDialog(event, d.id)}>Clone</button>
-                        <a className="btn btn-primary float-right" href={"http://" + d.address} target="_blank" rel="noopener noreferrer">Open</a>
-                        <h5>{dName} v{d.ver} @ {d.address}</h5>
-                      </li>
+                        <li className="list-group-item" key={dName}>
+                          <button className={"clone-btn btn btn-secondary float-right " + (!this.state.showDevControls && "d-none")}
+                                  onClick={async (event) => await this.downloadPatternArchive(event, d.id)}>
+                            Dump
+                          </button>
+                          <button className="clone-btn btn btn-secondary float-right" onClick={(event)=>this.openCloneDialog(event, d.id)}>Clone</button>
+                          <a className="clone-btn btn btn-primary float-right" href={"http://" + d.address} target="_blank" rel="noopener noreferrer">Open</a>
+                          <h5>{dName} v{d.ver} @ {d.address}</h5>
+                        </li>
                     )
                   })}
                 </ul>
@@ -544,7 +671,7 @@ class App extends Component {
               Patterns
               <button
                   className="btn btn-secondary float-right text-left btn-playlist-bulk"
-                  onClick={this.openPlaylistDialog}>
+                  onClick={(e) => this.openPlaylistDialog(e)}>
                 View Current Playlist
               </button>
               <button
@@ -588,16 +715,16 @@ class App extends Component {
                 }
 
                 return (
-                  <PatternView
-                    key={pattern.name}
-                    pattern={pattern}
-                    handlePatternClick={this._handlePatternClick}
-                    handleDurationChange={this._handleDurationChange}
-                    handleAddClick={this._handleAddClick}
-                    status={getStatus()}
-                    showDurations={(this.state.playlist.length > 1)}
-                    duration={getDuraton()}
-                  />
+                    <PatternView
+                        key={pattern.name}
+                        pattern={pattern}
+                        handlePatternClick={this._handlePatternClick}
+                        handleDurationChange={this._handleDurationChange}
+                        handleAddClick={this._handleAddClick}
+                        status={getStatus()}
+                        showDurations={(this.state.playlist.length > 1)}
+                        duration={getDuraton()}
+                    />
                 )
               })}
             </div>

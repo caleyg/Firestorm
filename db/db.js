@@ -14,7 +14,7 @@ knex.schema
     .hasTable('playlist')
     .then((exists) => {
         if (!exists) {
-            return knex.schema.createTable('playlist', (table)  => {
+            return knex.schema.createTable('playlist', (table) => {
                 table.increments('id').primary()
                 table.string('name')
                 table.float('duration')
@@ -37,5 +37,40 @@ knex.schema
 knex.select('*').from('playlist')
     .then(data => console.log('data:', data))
     .catch(err => console.log(err))
+
+
+knex.schema
+    .hasTable('brightness')
+    .then((exists) => {
+        if (!exists) {
+            return knex.schema.createTable('brightness', (table) => {
+                table.increments('id').primary()
+                table.float('value')
+            })
+                .then(function () {
+                        return knex("brightness").insert([
+                            {value: 0}
+                        ]);
+                    }
+                )
+                .then(() => {
+                    console.log('Table \'brightness\' created')
+                })
+                .catch((error) => {
+                    console.error(`There was an error creating the brightness table: ${error}`)
+                })
+        }
+    })
+    .then(() => {
+        console.log('done')
+    })
+    .catch((error) => {
+        console.error(`There was an error setting up the database: ${error}`)
+    })
+
+knex.select('*').from('brightness')
+    .then(data => console.log('data:', data))
+    .catch(err => console.log(err))
+
 
 module.exports = knex
