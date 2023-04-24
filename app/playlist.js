@@ -1,6 +1,6 @@
 const _ = require("lodash");
 const {discoveries} = require("./discovery");
-const {getPlaylistFromDB} = require("../db/controllers/playlist");
+const {getPlaylistFromDB, addPatternToPlaylist, removeAllPatterns} = require("../db/controllers/playlist");
 
 const WebSocket = require('ws');
 const http = require('http');
@@ -15,6 +15,7 @@ let currentPlaylist = []
 let currentPlaylistData = []
 let pixelBlazeData = []
 let pixelBlazeIds = []
+let pixelBlazePatterns = []
 let playlistTimeout = null
 let playlistLoopTimeout = null
 let initInterval = null
@@ -35,15 +36,41 @@ init = () => {
         .catch('there was an error gathering playlist details')
 
     // gather pixelblaze data
-    pixelBlazeData = _.map(discoveries, function (v, k) {
-        let res = _.pick(v, ['lastSeen', 'address']);
-        _.assign(res, v.controller.props);
-        return res;
-    })
+    pixelBlazeData = discoverPixelBlazes()
     pixelBlazeIds = _.map(pixelBlazeData, 'id')
 }
 
 initInterval = setInterval(init ,100)
+
+const discoverPixelBlazes = () => {
+    return _.map(discoveries, function (v, k) {
+        let res = _.pick(v, ['lastSeen', 'address']);
+        _.assign(res, v.controller.props);
+        return res;
+    })
+}
+const gatherPatternData = (pixelBlazeData) => {
+    let groupByPatternName = {};
+    _.each(pixelBlazeData, d => {
+        d.name = d.name || "Pixelblaze_" + d.id // set name if missing
+        _.each(d.programList, p => {
+            let pb = {
+                id: d.id,
+                name: d.name
+            };
+            if (groupByPatternName[p.name]) {
+                groupByPatternName[p.name].push(pb);
+            } else {
+                groupByPatternName[p.name] = [pb];
+            }
+        })
+    })
+    let groups = _.chain(groupByPatternName)
+        .map((v, k) => ({name: k}))
+        .sortBy('name')
+        .value();
+    return groups
+}
 
 const server = http.createServer();
 const address = '0.0.0.0'
@@ -72,6 +99,14 @@ playlistServer.on('connection', (connection) => {
         if (message.type === 'LAUNCH_PLAYLIST_NOW') {
             console.log('received launch playlist now message!')
             await runPlaylistLoopNow()
+        }
+        if (message.type === 'ENABLE_ALL_PATTERNS') {
+            console.log('received message to enable all patterns!')
+            await enableAllPatterns(message.duration)
+        }
+        if (message.type === 'DISABLE_ALL_PATTERNS') {
+            console.log('received message to disable all patterns!')
+            await disableAllPatterns(message.duration)
         }
     })
 });
@@ -137,6 +172,22 @@ module.exports.playlistLoop = async () => {
         playlistTimeout = null
         playlistLoopTimeout = null
     }
+}
+const enableAllPatterns = async (duration) => {
+    pixelBlazePatterns = gatherPatternData(pixelBlazeData)
+    _.each(pixelBlazePatterns, pattern => {
+        pattern['duration']=duration
+        let body = {
+            name: pattern.name,
+            duration: pattern.duration
+        }
+        addPatternToPlaylist(body)
+    })
+    await runPlaylistLoopNow()
+}
+const disableAllPatterns = async () => {
+    await removeAllPatterns()
+    await runPlaylistLoopNow()
 }
 const runPlaylistLoopNow = async () => {
     clearInterval(initInterval)

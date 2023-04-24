@@ -387,28 +387,24 @@ class App extends Component {
 
   enableAllPatterns = (event) => {
 
-    //TODO: spinner exits early, and this could be better perhaps add all
-    // patterns on backend and return when ready?
-    // http://localhost:3000/playlist/addPattern net::ERR_INSUFFICIENT_RESOURCES
-    // apiRequest @ App.js:72
-    // (anonymous) @ App.js:256
-    // App.storePlaylist @ App.js:251
-    // (anonymous) @ App.js:319
-    // re
-    event.preventDefault();
     if (this.state.deactivateEnableAllButton) {
       return;
     }
+    const message = {
+      type: 'ENABLE_ALL_PATTERNS',
+      duration: this.state.playlistDefaultInterval
+    }
+    sendMessage(message)
     // react processes state updates in batches and its
     // lifecycles make presenting this spinner awfully weird
     // this is a cruel hack to show a loader while processing all the patterns
     this.setState({ isProcessing: true }, () => {
-      const newPlaylist = this.state.playlist.slice();
+      // const newPlaylist = this.state.playlist.slice();
       // await (this.state.groups).forEach((pattern) => {
       for (const pattern of this.state.groups) {
         // await (this.state.groups).forEach((pattern) => {
         if (((this.state.playlist).some(item => item.name !== pattern.name)) || (!(this.state.playlist.length))) {
-          this.addNewPatternToPlaylist(pattern, newPlaylist, this.state.playlistDefaultInterval)
+          // this.addNewPatternToPlaylist(pattern, newPlaylist, this.state.playlistDefaultInterval)
         };
       }
       setTimeout(  () => {
@@ -422,17 +418,21 @@ class App extends Component {
   }
 
   disableAllPatterns = () => {
-
     // for some reason we still have one enabled here... must remove them all
     if (this.state.deactivateDisableAllButton) {
       return;
     }
-    (this.state.groups).forEach(async (pattern) => {
-      const playlist = this.state.playlist
-      const clickedPlaylistIndex = _(playlist).findIndex(['name', pattern.name])
-      await this.removePatternFromPlaylist(pattern, clickedPlaylistIndex, this.state.playlistIndex)
-    })
-    // resetting playlist state to force UI to rerender
+
+    const message = {
+      type: 'DISABLE_ALL_PATTERNS'
+    }
+    sendMessage(message)
+    // (this.state.groups).forEach(async (pattern) => {
+    //   const playlist = this.state.playlist
+    //   const clickedPlaylistIndex = _(playlist).findIndex(['name', pattern.name])
+    //   await this.removePatternFromPlaylist(pattern, clickedPlaylistIndex, this.state.playlistIndex)
+    // })
+    // // resetting playlist state to force UI to rerender
     this.setState({
       playlist: []
     })
@@ -441,7 +441,6 @@ class App extends Component {
     // setTimeout(() =>{
     //   this.storePlaylist()
     // }, 100);
-    this._launchPlaylistNow()
     this.setState({
       deactivateEnableAllButton: false,
       deactivateDisableAllButton: true,
