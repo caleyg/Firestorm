@@ -2,24 +2,12 @@ const _ = require("lodash");
 const {discoveries} = require("./discovery");
 const {getPlaylistFromDB, addPatternToPlaylist, removeAllPatterns} = require("../db/controllers/playlist");
 
-const WebSocket = require('ws');
-const http = require('http');
-const {
-    v4: uuidv4,
-} = require('uuid');
-
-const playlist = {};
-exports.playlist = playlist;
-
-let currentPlaylist = []
-let currentPlaylistData = []
-let pixelBlazeData = []
-let pixelBlazeIds = []
-let pixelBlazePatterns = []
-let playlistTimeout = null
-let playlistLoopTimeout = null
-let initInterval = null
-init = () => {
+let currentPlaylistData  = []
+let currentPlaylist      = []
+let initInterval
+let pixelBlazeData       = []
+let pixelBlazeIds        = []
+init = async () => {
     getPlaylistFromDB()
         .then((data) => {
             try {
@@ -39,161 +27,158 @@ init = () => {
     pixelBlazeData = discoverPixelBlazes()
     pixelBlazeIds = _.map(pixelBlazeData, 'id')
 }
-
-initInterval = setInterval(init ,100)
-
-const discoverPixelBlazes = () => {
+discoverPixelBlazes = () => {
     return _.map(discoveries, function (v, k) {
         let res = _.pick(v, ['lastSeen', 'address']);
         _.assign(res, v.controller.props);
         return res;
     })
 }
-const gatherPatternData = (pixelBlazeData) => {
-    let groupByPatternName = {};
-    _.each(pixelBlazeData, d => {
-        d.name = d.name || "Pixelblaze_" + d.id // set name if missing
-        _.each(d.programList, p => {
-            let pb = {
-                id: d.id,
-                name: d.name
-            };
-            if (groupByPatternName[p.name]) {
-                groupByPatternName[p.name].push(pb);
-            } else {
-                groupByPatternName[p.name] = [pb];
+initInterval = setInterval(init, 100)
+
+class Playlist {
+    constructor(utils) {
+        this.playlistLoopInterval = null
+        this.playlistLoopTimeout  = null
+        this.playlistTimeout      = null
+        this.utils                = utils ? utils : null
+    }
+
+    playlistLoop = async () => {
+        while(true) {
+            await new Promise(resolve => {
+                this.playlistLoopTimeout = setTimeout(resolve, 100)
+            });
+            console.log(pixelBlazeIds.length)
+            console.log({currentPlaylist})
+            if(pixelBlazeIds.length) {
+                await this.iterateOnPlaylist()
+            }
+            this.initInterval = null
+            this.playlistTimeout = null
+            this.playlistLoopTimeout = null
+            this.playlistLoopInterval = null
+        }
+    }
+    iterateOnPlaylist = async () => {
+        for (let index = 0; index < currentPlaylist.length; index++) {
+            const pattern = currentPlaylist[index]
+            await this.delaySendPattern(pattern)
+            await new Promise(resolve => {
+                console.log(`in iterate playlist waiting for ${pattern.duration * 1000}`)
+                this.playlistTimeout = setTimeout(resolve, pattern.duration * 1000)
+            });
+        }
+    }
+    delaySendPattern = async (pattern) => {
+        await new Promise((resolve) => {
+            resolve(
+                this.sendPattern(pattern)
+            )
+        })
+    }
+    disableAllPatterns = async () => {
+        await removeAllPatterns()
+        await this.runPlaylistLoopNow()
+    }
+    enableAllPatterns = async (duration) => {
+        const pixelBlazePatterns = this.gatherPatternData(pixelBlazeData)
+        _.each(pixelBlazePatterns, pattern => {
+            pattern['duration']=duration
+            let body = {
+                name: pattern.name,
+                duration: pattern.duration
+            }
+            addPatternToPlaylist(body)
+        })
+        await this.runPlaylistLoopNow()
+    }
+    gatherPatternData = (pixelBlazeData) => {
+        let groupByPatternName = {};
+        _.each(pixelBlazeData, d => {
+            d.name = d.name || "Pixelblaze_" + d.id // set name if missing
+            _.each(d.programList, p => {
+                let pb = {
+                    id: d.id,
+                    name: d.name
+                };
+                if (groupByPatternName[p.name]) {
+                    groupByPatternName[p.name].push(pb);
+                } else {
+                    groupByPatternName[p.name] = [pb];
+                }
+            })
+        })
+        let groups = _.chain(groupByPatternName)
+            .map((v, k) => ({name: k}))
+            .sortBy('name')
+            .value();
+        return groups
+    }
+    runPlaylistLoopNow = async () => {
+        clearInterval(this.initInterval)
+        clearInterval(this.playlistTimeout)
+        clearInterval(this.playlistLoopInterval)
+
+        await this.playlistLoop()
+    }
+    sendPattern = (pattern) => {
+        console.log('sending message')
+        const name = pattern.name
+        _.each(pixelBlazeIds, async id => {
+            id = String(id);
+            let controller = discoveries[id] && discoveries[id].controller;
+            if (controller) {
+                const command = {
+                    programName: pattern.name
+                }
+                await controller.setCommand(command);
             }
         })
-    })
-    let groups = _.chain(groupByPatternName)
-        .map((v, k) => ({name: k}))
-        .sortBy('name')
-        .value();
-    return groups
+        // skipping this if utils is not initialized due to no websocket connections
+        if(this.utils) {
+            let message = {
+                currentRunningPattern: name,
+                currentPlaylist: currentPlaylist
+            }
+            console.log(message)
+            this.utils.broadcastMessage(message)
+        }
+    }
+
 }
+// Initializing the playlist loop outside the websocket
+// because we might not always have a browser open when
+// starting/restarting the node-server... it should send
+// commands and operate on the playlist w/o the need of an
+// active websocket connection
+initThe = new Playlist()
+initThe.playlistLoop()
+    .then(() =>  {})
 
-const server = http.createServer();
-const address = '0.0.0.0'
-const port = 1890;
-const playlistServer = new WebSocket.Server({host: address , port: port});
-console.log(`Playlist server is running on ${address}:${port}`)
 
-const playlistClients = {};
-
-playlistServer.on('connection', (connection) => {
-    // Generate a unique code for every user
-    const clientId = uuidv4()
-    console.log(`Recieved a new connection.`);
-
-    // Store the new connection and handle messages
-    playlistClients[clientId] = connection;
-    console.log(`${clientId} connected.`);
-    connection.on('message', async (data) => {
+module.exports.PlaylistWebSocket = function (utils) {
+    const playlist = new Playlist(utils)
+    this.utils = utils
+    this.receiveMessage = async function (data) {
         let message
         try {
             message = JSON.parse(data);
         } catch (err) {
-            sendError(playlistServer, `Wrong format ${err}`)
+            this.utils.sendError(err)
             return
         }
         if (message.type === 'LAUNCH_PLAYLIST_NOW') {
             console.log('received launch playlist now message!')
-            await runPlaylistLoopNow()
+            await playlist.runPlaylistLoopNow()
         }
         if (message.type === 'ENABLE_ALL_PATTERNS') {
             console.log('received message to enable all patterns!')
-            await enableAllPatterns(message.duration)
+            await playlist.enableAllPatterns(message.duration)
         }
         if (message.type === 'DISABLE_ALL_PATTERNS') {
             console.log('received message to disable all patterns!')
-            await disableAllPatterns(message.duration)
+            await playlist.disableAllPatterns(message.duration)
         }
-    })
-});
-
-const sendError = (ws, message) => {
-    const messageObject = {
-        type: 'ERROR',
-        payload: message,
-    };
-    ws.send(JSON.stringify(messageObject));
-};
-const broadcastMessage = (json) => {
-    const data = JSON.stringify(json);
-    for(let userId in playlistClients) {
-        let playlistClient = playlistClients[userId];
-        if(playlistClient.readyState === WebSocket.OPEN) {
-            playlistClient.send(data);
-        }
-    };
-};
-const sendPattern = (pattern) => {
-    const  name = pattern.name
-    _.each(pixelBlazeIds, async id => {
-        id = String(id);
-        let controller = discoveries[id] && discoveries[id].controller;
-        if (controller) {
-            const command = {
-                programName: pattern.name
-            }
-            await controller.setCommand(command);
-        }
-    })
-    let message = {
-        currentRunningPattern: name,
-        currentPlaylist: currentPlaylist
-    }
-    broadcastMessage(message)
-}
-
-const delaySendPattern = (pattern) => {
-    return new Promise((resolve) => {
-        resolve(sendPattern(pattern))
-    })
-}
-const iterateOnPlaylist =  async () => {
-    for (let index = 0; index < currentPlaylist.length; index++) {
-        const pattern = currentPlaylist[index]
-        await delaySendPattern(pattern)
-        await new Promise(resolve => {
-            playlistTimeout = setTimeout(resolve, pattern.duration * 1000)
-        });
     }
 }
-module.exports.playlistLoop = async () => {
-    while (true) {
-        await new Promise(resolve => {
-            playlistLoopTimeout = setTimeout(resolve, 100)
-        });
-        if(pixelBlazeIds.length) {
-            await iterateOnPlaylist()
-        }
-        initInterval = null
-        playlistTimeout = null
-        playlistLoopTimeout = null
-    }
-}
-const enableAllPatterns = async (duration) => {
-    pixelBlazePatterns = gatherPatternData(pixelBlazeData)
-    _.each(pixelBlazePatterns, pattern => {
-        pattern['duration']=duration
-        let body = {
-            name: pattern.name,
-            duration: pattern.duration
-        }
-        addPatternToPlaylist(body)
-    })
-    await runPlaylistLoopNow()
-}
-const disableAllPatterns = async () => {
-    await removeAllPatterns()
-    await runPlaylistLoopNow()
-}
-const runPlaylistLoopNow = async () => {
-    clearInterval(initInterval)
-    clearInterval(playlistTimeout)
-    clearInterval(playlistLoopTimeout)
-
-    await this.playlistLoop()
-}
-this.playlistLoop()

@@ -4,7 +4,8 @@ const app = express()
 const bodyParser = require('body-parser');
 const compression = require('compression');
 const repl = require('repl');
-require("./app/playlist");
+require("./app/firestormWebsocket");
+// require("./app/playlist");
 discovery.start({
   host: '0.0.0.0',
   port: 1889
