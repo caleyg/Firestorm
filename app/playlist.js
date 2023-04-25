@@ -11,7 +11,7 @@ init = async () => {
     getPlaylistFromDB()
         .then((data) => {
             try {
-                currentPlaylist = [] // resetting current play so it doesn't grow to infinity
+                currentPlaylist = [] // resetting current playlist so it doesn't grow to infinity
                 currentPlaylist.push(...data) // adding new playlist items to list
                 if (JSON.stringify(currentPlaylist) !== JSON.stringify(currentPlaylistData)) {
                     currentPlaylistData = []
@@ -38,7 +38,6 @@ initInterval = setInterval(init, 100)
 
 class Playlist {
     constructor(utils) {
-        this.playlistLoopInterval = null
         this.playlistLoopTimeout  = null
         this.playlistTimeout      = null
         this.utils                = utils ? utils : null
@@ -49,15 +48,13 @@ class Playlist {
             await new Promise(resolve => {
                 this.playlistLoopTimeout = setTimeout(resolve, 100)
             });
-            console.log(pixelBlazeIds.length)
             console.log({currentPlaylist})
             if(pixelBlazeIds.length) {
                 await this.iterateOnPlaylist()
             }
-            this.initInterval = null
+            initInterval = null
             this.playlistTimeout = null
             this.playlistLoopTimeout = null
-            this.playlistLoopInterval = null
         }
     }
     iterateOnPlaylist = async () => {
@@ -65,7 +62,6 @@ class Playlist {
             const pattern = currentPlaylist[index]
             await this.delaySendPattern(pattern)
             await new Promise(resolve => {
-                console.log(`in iterate playlist waiting for ${pattern.duration * 1000}`)
                 this.playlistTimeout = setTimeout(resolve, pattern.duration * 1000)
             });
         }
@@ -83,15 +79,21 @@ class Playlist {
     }
     enableAllPatterns = async (duration) => {
         const pixelBlazePatterns = this.gatherPatternData(pixelBlazeData)
-        _.each(pixelBlazePatterns, pattern => {
-            pattern['duration']=duration
-            let body = {
-                name: pattern.name,
-                duration: pattern.duration
-            }
-            addPatternToPlaylist(body)
-        })
-        await this.runPlaylistLoopNow()
+        const enableAll = new Promise((resolve) => {
+            _.each(pixelBlazePatterns, pattern => {
+                pattern['duration'] = duration
+                let body = {
+                    name: pattern.name,
+                    duration: pattern.duration
+                }
+                addPatternToPlaylist(body)
+            })
+            resolve();
+        });
+        enableAll
+            .then(() => {
+                this.runPlaylistLoopNow()
+            })
     }
     gatherPatternData = (pixelBlazeData) => {
         let groupByPatternName = {};
@@ -116,14 +118,13 @@ class Playlist {
         return groups
     }
     runPlaylistLoopNow = async () => {
-        clearInterval(this.initInterval)
+        clearInterval(initInterval)
         clearInterval(this.playlistTimeout)
-        clearInterval(this.playlistLoopInterval)
+        clearInterval(this.playlistLoopTimeout)
 
         await this.playlistLoop()
     }
     sendPattern = (pattern) => {
-        console.log('sending message')
         const name = pattern.name
         _.each(pixelBlazeIds, async id => {
             id = String(id);
