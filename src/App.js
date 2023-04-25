@@ -9,7 +9,7 @@ class App extends Component {
   constructor(props) {
     super(props);
     this.state = {
-      brightness: null,
+      brightness: 0,
       deactivateDisableAllButton: true,
       deactivateEnableAllButton: false,
       discoveries: [],
@@ -43,10 +43,17 @@ class App extends Component {
     const message = this.state.message
     if(message) {
       message.filter((item) => {
-        this.setState({
-          runningPatternName: (this.state.runningPatternName === item.currentRunningPattern) ? this.state.runningPatternName : item.currentRunningPattern,
-          playlist: JSON.parse((JSON.stringify(this.state.playlist) === JSON.stringify(item.currentPlaylist)) ? JSON.stringify(this.state.playlist) : JSON.stringify(item.currentPlaylist)),
-        })
+        if ( item.currentRunningPattern && item.currentPlaylist ){
+          this.setState({
+            runningPatternName: (this.state.runningPatternName === item.currentRunningPattern) ? this.state.runningPatternName : item.currentRunningPattern,
+            playlist: JSON.parse((JSON.stringify(this.state.playlist) === JSON.stringify(item.currentPlaylist)) ? JSON.stringify(this.state.playlist) : JSON.stringify(item.currentPlaylist)),
+          })
+        }
+        if ( item.currentBrightness){
+          this.setState({
+            brightness:  (this.state.brightness === item.currentBrightness) ? this.state.brightness : item.currentBrightness,
+          })
+        }
         return this
       })
     }
@@ -118,12 +125,12 @@ class App extends Component {
 
   async componentDidMount() {
     document.addEventListener("keydown", this._handleKeyDown);
-    this.getCurrentBrightness()
     await this.poll()
     // connecting to playlist websocket server
     connect();
     // attaching websocket event listener to receive messages
     ws.addEventListener('message', (event) => {this.receiveMessage(event)});
+    this._getBrightnessNow();
     // using setState chain to control timing of these two functions.
     this.setState({}, () =>  {
       // kicking off playlist event loops on page load
@@ -152,42 +159,19 @@ class App extends Component {
     ws.removeEventListener('message', (event) => {this.receiveMessage(event)});
   }
 
-  delayedSaveBrightness = _.debounce(async (resolve, payload) => {
-    resolve(fetch('./command', payload));
-    //TODO: fix this
-    this.storeBrightness();
-  }, 1000)
-
-  changeBrightness = (event) => {
+  changeBrightness = async (event) => {
     event.preventDefault()
-    return new Promise((resolve) => {
-      this.setState({brightness: event.target.value}, () => {
-        const payload = {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            command: {
-              brightness: parseFloat(this.state.brightness)
-            },
-            ids: _.map(this.state.discoveries, 'id')
-          })
-        }
-        this.delayedSaveBrightness(resolve, payload)
-      })
+    this.setState({
+      brightness: event.target.value
     })
+    const message = {
+      type: 'ADJUST_BRIGHTNESS',
+      brightness: event.target.value
+    }
+    await sendMessage(message)
+
   }
-  getCurrentBrightness() {
-    this.apiRequest('GET', null, './brightness/current')
-        .then((currentBrightness) => {
-          this.setState({
-            brightness: currentBrightness[0].value
-          })
-          return
-        })
-  }
+
   downloadPatternArchive = async (event, deviceId) => {
     event.preventDefault()
     await fetch(`./controllers/${deviceId}/dump`)
@@ -283,16 +267,6 @@ class App extends Component {
     }
   }
 
-  storeBrightness = () => {
-    const body = JSON.stringify({
-      value: parseFloat(this.state.brightness)
-    })
-    this.apiRequest('POST', body, './brightness/update')
-        .then((brightness) => {
-          return brightness;
-        })
-  }
-
   _handleDurationChange = async (event, pattern, newDuration) => {
     event.preventDefault()
     const newValidDuration = parseFloat(newDuration) || 0
@@ -368,6 +342,12 @@ class App extends Component {
     }
     sendMessage(message)
   }
+  _getBrightnessNow() {
+    const message = {
+      type: 'GET_CURRENT_BRIGHTNESS'
+    }
+    sendMessage(message)
+  }
   async _launchPatternAndSetTimeout() {
     await this._launchCurrentPattern()
   }
@@ -427,20 +407,10 @@ class App extends Component {
       type: 'DISABLE_ALL_PATTERNS'
     }
     sendMessage(message)
-    // (this.state.groups).forEach(async (pattern) => {
-    //   const playlist = this.state.playlist
-    //   const clickedPlaylistIndex = _(playlist).findIndex(['name', pattern.name])
-    //   await this.removePatternFromPlaylist(pattern, clickedPlaylistIndex, this.state.playlistIndex)
-    // })
-    // // resetting playlist state to force UI to rerender
+    // resetting playlist state to force UI to rerender
     this.setState({
       playlist: []
     })
-    // gathering current playlist from local db and forcing UI to rerender with current pattern entry
-    // effectively a newplaylist.
-    // setTimeout(() =>{
-    //   this.storePlaylist()
-    // }, 100);
     this.setState({
       deactivateEnableAllButton: false,
       deactivateDisableAllButton: true,
@@ -634,7 +604,9 @@ class App extends Component {
                           id="brightness"
                           type="range"
                           className="form-control"
-                          onChange={this.changeBrightness}
+                          onChange={async (e) => {
+                            await this.changeBrightness(e)
+                          }}
                           min="0"
                           max="1"
                           step=".005"

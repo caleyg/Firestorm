@@ -12,13 +12,17 @@ exports.doesBrightnessExistInTable = async (req) => {
         })
 }
 
-exports.currentBrightness = async (req, res) => {
+exports.getCurrentBrightness = async (req, res) => {
     return await knex
         .select('*')
         .from(brightness_table)
         .then((data) => {
-            res.status(200)
-                .json(data);
+            if(res) {
+                res.status(200)
+                    .json(data);
+            } else {
+                return data
+            }
         })
         .catch(err => {
             console.log(`There was an error retrieving brightness: ${err}`)
@@ -26,6 +30,12 @@ exports.currentBrightness = async (req, res) => {
 }
 
 exports.updateBrightness = async (req, res) => {
+    let brightnessValue = ''
+    try {
+        brightnessValue = req.body.value
+    } catch(err) {
+        brightnessValue = req.value
+    }
     await knex.transaction(async trx => {
         //clear table first
         await knex
@@ -36,20 +46,30 @@ exports.updateBrightness = async (req, res) => {
         // insert new pattern
         await knex
             .insert({
-                value: req.body.value,
+                value: brightnessValue,
             })
             .into(brightness_table)
             .transacting(trx);
     })
-        .then( () => {
-                res.status(200)
-                    .json({ message: `Creating a new brightness with level '${req.body.value}'.`});
-            }
-        )
-        .catch(err => {
+    .then( () => {
+        if(res) {
+            res.status(200)
+                .json({message: `Creating a new brightness with level '${brightnessValue}'.`})
+        } else {
+            return JSON.stringify({message: 'ok'})
+        }
+    })
+    .catch(err => {
+        if(res) {
             res.status(500)
                 .json({
-                    message: `There was an error creating a new brightness with level '${req.body.value}', error: ${err}`
+                    message: `There was an error creating a new brightness with level '${brightnessValue}', error: ${err}`
                 })
-        })
+        } else {
+            return JSON.stringify({
+                code: 500,
+                message: `There was an error creating a new brightness with level '${brightnessValue}', error: ${err}`
+            })
+        }
+    })
 }

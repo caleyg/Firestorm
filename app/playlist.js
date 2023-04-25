@@ -1,7 +1,6 @@
 const _ = require("lodash");
-const {discoveries} = require("./discovery");
 const {getPlaylistFromDB, addPatternToPlaylist, removeAllPatterns} = require("../db/controllers/playlist");
-
+const {discoverPixelBlazes, sendCommand} = require("./pixelBlazeUtils");
 let currentPlaylistData  = []
 let currentPlaylist      = []
 let initInterval
@@ -27,13 +26,7 @@ init = async () => {
     pixelBlazeData = discoverPixelBlazes()
     pixelBlazeIds = _.map(pixelBlazeData, 'id')
 }
-discoverPixelBlazes = () => {
-    return _.map(discoveries, function (v, k) {
-        let res = _.pick(v, ['lastSeen', 'address']);
-        _.assign(res, v.controller.props);
-        return res;
-    })
-}
+
 initInterval = setInterval(init, 100)
 
 class Playlist {
@@ -48,7 +41,6 @@ class Playlist {
             await new Promise(resolve => {
                 this.playlistLoopTimeout = setTimeout(resolve, 100)
             });
-            console.log({currentPlaylist})
             if(pixelBlazeIds.length) {
                 await this.iterateOnPlaylist()
             }
@@ -126,23 +118,13 @@ class Playlist {
     }
     sendPattern = (pattern) => {
         const name = pattern.name
-        _.each(pixelBlazeIds, async id => {
-            id = String(id);
-            let controller = discoveries[id] && discoveries[id].controller;
-            if (controller) {
-                const command = {
-                    programName: pattern.name
-                }
-                await controller.setCommand(command);
-            }
-        })
+        sendCommand(pixelBlazeIds, name)
         // skipping this if utils is not initialized due to no websocket connections
+        let message = {
+            currentRunningPattern: name,
+            currentPlaylist: currentPlaylist
+        }
         if(this.utils) {
-            let message = {
-                currentRunningPattern: name,
-                currentPlaylist: currentPlaylist
-            }
-            console.log(message)
             this.utils.broadcastMessage(message)
         }
     }

@@ -27,17 +27,9 @@ knex.schema
                 })
         }
     })
-    .then(() => {
-        console.log('done')
-    })
     .catch((error) => {
         console.error(`There was an error setting up the database: ${error}`)
     })
-
-knex.select('*').from('playlist')
-    .then(data => console.log('data:', data))
-    .catch(err => console.log(err))
-
 
 knex.schema
     .hasTable('brightness')
@@ -61,16 +53,8 @@ knex.schema
                 })
         }
     })
-    .then(() => {
-        console.log('done')
-    })
     .catch((error) => {
         console.error(`There was an error setting up the database: ${error}`)
     })
-
-knex.select('*').from('brightness')
-    .then(data => console.log('data:', data))
-    .catch(err => console.log(err))
-
 
 module.exports = knex
